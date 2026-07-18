@@ -1,0 +1,163 @@
+(ns husbandry.actor-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [husbandry.actor :as actor]
+            [husbandry.advisor :as advisor]
+            [husbandry.governor :as governor]
+            [husbandry.store :as store]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-farmer! st {:farmer-id "F-1" :name "Farmer Kobo"
+                                :holding-id "holding-9" :verified? true})
+    (store/register-holding! st {:holding-id "holding-9"
+                                 :max-supply-cost 300 :verified? true})
+    st))
+
+;; --- happy paths ------------------------------------------------------
+
+(deftest commits-a-well-formed-work-log-entry
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:op :log-work-record :stake :low :farmer-id "F-1" :holding-id "holding-9"
+                  :work-id "W-1" :feeding-schedule :morning-and-evening
+                  :condition-checkin :serviceable :timestamp "2026-07-14T10:00:00Z"}
+        result (actor/run-request! graph request {} "thread-1")]
+    (is (= :done (:status result)))
+    (is (some? (get-in result [:state :record])))
+    (is (= 1 (count (store/records-of st "holding-9"))))))
+
+(deftest commits-a-farm-operation-scheduling
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:op :schedule-farm-operation :stake :low :farmer-id "F-1" :holding-id "holding-9"
+                  :task-id "T-12" :proposed-time "2026-07-20T09:00:00Z" :assignee "household-member-2"}
+        result (actor/run-request! graph request {} "thread-2")]
+    (is (= :done (:status result)))
+    (is (= 1 (count (store/records-of st "holding-9"))))))
+
+(deftest commits-an-at-or-below-threshold-supply-order
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:op :coordinate-supply-order :stake :low :farmer-id "F-1" :holding-id "holding-9"
+                  :item "mineral feed supplement" :cost 40 :vendor "HoldingSupplyCo"}
+        result (actor/run-request! graph request {} "thread-3")]
+    (is (= :done (:status result)))
+    (is (some? (get-in result [:state :record])))))
+
+;; --- hard blocks --------------------------------------------------------
+
+(deftest holds-an-unverified-farmer-proposal
+  (let [st (fresh-store)]
+    (store/register-farmer! st {:farmer-id "F-2" :name "Unverified"
+                                :holding-id "holding-9" :verified? false})
+    (let [graph (actor/build-graph {:store st})
+          request {:op :log-work-record :stake :low :farmer-id "F-2" :holding-id "holding-9"
+                    :work-id "W-1" :feeding-schedule :morning-and-evening
+                    :condition-checkin :serviceable :timestamp "2026-07-14T10:00:00Z"}
+          result (actor/run-request! graph request {} "thread-4")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "holding-9"))))))
+
+(deftest holds-an-unverified-holding-proposal
+  (let [st (fresh-store)]
+    (store/register-holding! st {:holding-id "holding-2" :max-supply-cost 300 :verified? false})
+    (let [graph (actor/build-graph {:store st})
+          request {:op :log-work-record :stake :low :farmer-id "F-1" :holding-id "holding-2"
+                    :work-id "W-1" :feeding-schedule :morning-and-evening
+                    :condition-checkin :serviceable :timestamp "2026-07-14T10:00:00Z"}
+          result (actor/run-request! graph request {} "thread-5")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "holding-2"))))))
+
+(deftest holds-a-holding-mismatch-proposal
+  (let [st (fresh-store)]
+    (store/register-holding! st {:holding-id "holding-3" :max-supply-cost 300 :verified? true})
+    (let [graph (actor/build-graph {:store st})
+          request {:op :log-work-record :stake :low :farmer-id "F-1" :holding-id "holding-3"
+                    :work-id "W-1" :feeding-schedule :morning-and-evening
+                    :condition-checkin :serviceable :timestamp "2026-07-14T10:00:00Z"}
+          result (actor/run-request! graph request {} "thread-6")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "holding-3"))))))
+
+(deftest holds-a-treatment-decision-attempt
+  (testing "log-work-record can never carry a treatment decision, even via a custom advisor"
+    (let [st (fresh-store)
+          rogue (reify advisor/Advisor
+                  (-advise [_ _store _request]
+                    {:op :log-work-record :effect :propose :farmer-id "F-1" :holding-id "holding-9"
+                     :treatment-decision "administer rest day" :stake :low :confidence 0.9
+                     :rationale "documented log-work-record for holding holding-9"}))
+          graph (actor/build-graph {:store st :advisor rogue})
+          result (actor/run-request! graph {:op :log-work-record} {} "thread-7")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "holding-9"))))))
+
+(deftest holds-a-farm-schedule-override-attempt
+  (testing "schedule-farm-operation can never carry a farmer-judgment override, even via a custom advisor"
+    (let [st (fresh-store)
+          rogue (reify advisor/Advisor
+                  (-advise [_ _store _request]
+                    {:op :schedule-farm-operation :effect :propose :farmer-id "F-1" :holding-id "holding-9"
+                     :farmer-judgment-override "proceed despite farmer hesitation" :stake :low :confidence 0.9
+                     :rationale "documented schedule-farm-operation for holding holding-9"}))
+          graph (actor/build-graph {:store st :advisor rogue})
+          result (actor/run-request! graph {:op :schedule-farm-operation} {} "thread-8")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "holding-9"))))))
+
+(deftest holds-every-scope-excluded-op-attempt-even-via-a-rogue-advisor
+  (testing "no path through this actor can finalize an animal-treatment/welfare/breeding decision, or override the
+            farmer's own judgment about their household's livestock -- proven by forcing a rogue advisor to
+            propose each named op"
+    (doseq [op governor/scope-excluded-ops]
+      (let [st (fresh-store)
+            rogue (reify advisor/Advisor
+                    (-advise [_ _store _request]
+                      {:op op :effect :propose :farmer-id "F-1" :holding-id "holding-9"
+                       :stake :low :confidence 0.99
+                       :rationale (str "documented " (name op) " for holding holding-9")}))
+            graph (actor/build-graph {:store st :advisor rogue})
+            result (actor/run-request! graph {:op op} {} (str "thread-scope-" (name op)))]
+        (is (= :hold (:disposition (:state result))) (str "op " op " was not held"))
+        (is (empty? (store/records-of st "holding-9")) (str "op " op " committed a record"))))))
+
+(deftest holds-a-scope-excluded-rationale-attempt-even-via-a-rogue-advisor
+  (testing "an otherwise-allowed op whose rationale smuggles a finalization/execution action phrase is held"
+    (let [st (fresh-store)
+          rogue (reify advisor/Advisor
+                  (-advise [_ _store _request]
+                    {:op :log-work-record :effect :propose :farmer-id "F-1" :holding-id "holding-9"
+                     :work-id "W-1" :feeding-schedule :morning-and-evening
+                     :condition-checkin :serviceable :timestamp "2026-07-14T10:00:00Z"
+                     :stake :low :confidence 0.99
+                     :rationale "logged the feeding check-in in order to finalize the breeding decision"}))
+          graph (actor/build-graph {:store st :advisor rogue})
+          result (actor/run-request! graph {:op :log-work-record} {} "thread-9")]
+      (is (= :hold (:disposition (:state result))))
+      (is (empty? (store/records-of st "holding-9"))))))
+
+;; --- escalation / human-in-the-loop --------------------------------------
+
+(deftest interrupts-then-approves-flag-welfare-concern-on-human-approval
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:op :flag-welfare-concern :stake :low :farmer-id "F-1" :holding-id "holding-NEW"
+                  :reason :animal-welfare :note "new holding intake needs equipment audit"}
+        interrupted (actor/run-request! graph request {} "thread-10")]
+    (is (= :interrupted (:status interrupted)))
+    (is (empty? (store/records-of st "holding-NEW")))
+    (let [resumed (actor/approve! graph "thread-10")]
+      (is (= :done (:status resumed)))
+      (is (= 1 (count (store/records-of st "holding-NEW")))))))
+
+(deftest interrupts-then-approves-above-threshold-supply-order-on-human-approval
+  (let [st (fresh-store)
+        graph (actor/build-graph {:store st})
+        request {:op :coordinate-supply-order :stake :low :farmer-id "F-1" :holding-id "holding-9"
+                  :item "replacement fencing" :cost 5000 :vendor "HoldingSupplyCo"}
+        interrupted (actor/run-request! graph request {} "thread-11")]
+    (is (= :interrupted (:status interrupted)))
+    (let [resumed (actor/approve! graph "thread-11")]
+      (is (= :done (:status resumed)))
+      (is (some? (get-in resumed [:state :record]))))))

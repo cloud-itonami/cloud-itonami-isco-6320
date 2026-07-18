@@ -1,0 +1,11 @@
+[{:itonami.blueprint/social-impact [:animal-welfare-integrity :household-livelihood-continuity :farm-record-keeping-transparency]
+  :itonami.blueprint/domain :agriculture/subsistence-livestock-farm-record-keeping-and-logistics-coordination
+  :itonami.blueprint/required-technologies [:robotics :identity :audit-ledger]
+  :itonami.blueprint/isco-08 "6320"
+  :itonami.blueprint/name "Subsistence Livestock Farm Record-Keeping and Logistics Coordination Practice"
+  :itonami.blueprint/governor :husbandry-governor
+  :itonami.blueprint/robotics true
+  :db/id -1
+  :itonami.blueprint/status :public-oss
+  :itonami.blueprint/id "cloud-itonami-isco-6320"
+  :itonami.blueprint/license "AGPL-3.0-or-later"}]
