@@ -43,7 +43,7 @@ wired to a `Farm Operations Advisor` (`husbandry.advisor`) and an
 independent `HusbandryGovernor` (`husbandry.governor`), following the
 itonami actor pattern (ADR-2607121000): `:intake -> :advise -> :govern
 -> :decide -+-> :commit (:ok?) +-> :request-approval (:escalate?,
-human-in-the-loop interrupt) +-> :hold (:hard?)`. Run `clojure -M:test`
+human-in-the-loop interrupt) +-> :hold (:hard?)`. Run `kbb -M:test`
 for the current test count.
 
 HARD invariants (always hold, never overridable): farmer provenance (a
