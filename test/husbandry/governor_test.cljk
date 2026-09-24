@@ -1,5 +1,5 @@
 (ns husbandry.governor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [husbandry.store :as store]
             [husbandry.advisor :as advisor]
             [husbandry.governor :as governor]))
