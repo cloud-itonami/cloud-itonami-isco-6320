@@ -1,5 +1,5 @@
 (ns husbandry.actor-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [husbandry.actor :as actor]
             [husbandry.advisor :as advisor]
             [husbandry.governor :as governor]
