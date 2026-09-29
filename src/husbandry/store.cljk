@@ -1,7 +1,7 @@
 (ns husbandry.store
   "SSoT for the ISCO-08 6320 subsistence-livestock-farmers farm record-
   keeping/logistics coordination actor (itonami actor pattern,
-  ADR-2607121000 / CLAUDE.md Actors section; README's 'Robotics
+  ADR-2607121000 / AGENTS.md Actors section; README's 'Robotics
   premise' — a farm-logistics robot performs feeding-schedule/animal-
   condition-check-in data entry, household labor/task scheduling, and
   feed/supplies procurement coordination under this advisor/governor
